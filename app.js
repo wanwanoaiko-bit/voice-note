@@ -15,7 +15,23 @@ function openEditor(type,id){editing={type,id};$('editTitle').textContent=type==
 $('editForm').onsubmit=e=>{e.preventDefault();const value=$('editValue').value.trim();if(!value)return;if(editing.type==='new'){const n={id:uid(),name:value,phrases:[]};state.notes.push(n);active=n.id;}else if(editing.type==='note')note().name=value;else note().phrases.find(p=>p.id===editing.id).text=value;persist();render();$('editDialog').close()};
 $('deleteItem').onclick=()=>{if(!confirm(editing.type==='note'?'このノートと中のフレーズを削除しますか？':'このフレーズを削除しますか？'))return;if(editing.type==='note'){state.notes=state.notes.filter(n=>n.id!==active);if(!state.notes.length)state.notes.push({id:uid(),name:'新しいノート',phrases:[]});active=state.notes[0].id;}else note().phrases=note().phrases.filter(p=>p.id!==editing.id);persist();render();$('editDialog').close()};
 $('closeEdit').onclick=()=>$('editDialog').close();$('noteMenu').onclick=()=>openEditor('note');$('allFilter').onclick=()=>{favorites=false;render()};$('favoriteFilter').onclick=()=>{favorites=true;render()};$('draft').oninput=()=>$('charCount').textContent=$('draft').value.length+'文字';$('save').onclick=()=>{const text=$('draft').value.trim();if(!text){notify('保存する文章を入力してください。');return}note().phrases.push({id:uid(),text,favorite:false});favorites=false;if(persist())notify('ノートに保存しました。');render()};
-function segments(text,lang='auto'){if(lang!=='auto')return [{text,lang}];const parts=text.match(/[A-Za-z]+(?:['’.-][A-Za-z]+)*(?:[ ,!?;:\n]+[A-Za-z]+(?:['’.-][A-Za-z]+)*)*|[^A-Za-z]+/g)||[];const result=[];parts.forEach(t=>{let l=/[A-Za-z]/.test(t)?'en':/[ぁ-んァ-ヶ一-龠]/u.test(t)?'ja':result.at(-1)?.lang||(/[ぁ-んァ-ヶ一-龠]/u.test(text)?'ja':'en');if(result.at(-1)?.lang===l)result.at(-1).text+=t;else result.push({text:t,lang:l})});return result}
+function segments(text,lang='auto'){
+ if(lang!=='auto')return [{text,lang}];
+ const tokens=text.match(/[\p{Script=Latin}]+(?:['’.-][\p{Script=Latin}]+)*|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー々〆]+|[^\p{Script=Latin}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー々〆]+/gu)||[];
+ const kinds=tokens.map(t=>/\p{Script=Latin}/u.test(t)?'en':/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(t)?'ja':null);
+ const result=[];
+ tokens.forEach((text,i)=>{
+  let language=kinds[i];
+  if(!language){
+   const previous=result.at(-1)?.lang;
+   const next=kinds.slice(i+1).find(Boolean);
+   language=previous||next||'ja';
+  }
+  if(result.at(-1)?.lang===language)result.at(-1).text+=text;
+  else result.push({text,lang:language});
+ });
+ return result;
+}
 // Keep queued utterances alive until playback ends (including on mobile).
 let queuedUtterances=[],currentSpeech=null,startWatchdog,waitTicker,lastAttempt=null;
 function speechMessage(message){$('speechProgress').textContent=message}
@@ -36,12 +52,25 @@ function voiceFor(lang){
  return available.map((v,i)=>({v,i,score:(quality(v)?(qualityFirst?300:50):0)+(male(v)?100:0)+(local&&v.localService?400:0)+(v.lang.toLowerCase()===(lang==='en'?'en-us':'ja-jp')?10:0)+(v.default?1:0)})).sort((a,b)=>b.score-a.score||a.i-b.i)[0]?.v;
 }
 function speechChunks(text,language){
- return segments(text.replace(/(?<=[A-Za-z])[～〜]/g,''),language).flatMap(part=>{
-  // Quotation marks are visual delimiters: avoid extra pauses around quoted English.
-  const spoken=part.text.replace(/[「」『』“”]/g,'').replace(/(?<=[A-Za-z])[～〜]/g,'');
-  return (spoken.match(/[^。！？\n]+[。！？\n]*|[。！？\n]+/gu)||[])
-   .filter(t=>/[\p{L}\p{N}]/u.test(t))
-   .map(t=>({text:t,lang:part.lang}));
+ // Keep short passages together so the voice can use their punctuation and context.
+ // Bound long requests without discarding words or splitting Unicode characters.
+ const normalized=text.replace(/[\uFF01-\uFF5E]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0))
+  .replace(/[「」『』“”]/g,'').replace(/(?<=[\p{Script=Latin}])[～〜]/gu,'');
+ return segments(normalized,language).flatMap(part=>{
+  const chunks=[];let remaining=Array.from(part.text);
+  while(remaining.length){
+   let end=Math.min(160,remaining.length);
+   if(remaining.length>160){
+    const window=remaining.slice(0,160).join('');
+    const sentence=[...window.matchAll(/[。！？!?](?:\s*)|\.(?=\s|$)\s*/gu)].at(-1);
+    const phrase=[...window.matchAll(/[、,;:]\s*|\s+/gu)].at(-1);
+    const boundary=sentence||phrase;
+    if(boundary)end=Array.from(window.slice(0,boundary.index+boundary[0].length)).length;
+   }
+   const spoken=remaining.splice(0,end).join('');
+   if(/[\p{L}\p{N}]/u.test(spoken))chunks.push({text:spoken,lang:part.lang});
+  }
+  return chunks;
  });
 }
 function stop(){clearTimeout(startWatchdog);clearInterval(waitTicker);generation++;if('speechSynthesis'in window&&(speechSynthesis.speaking||speechSynthesis.pending||speechSynthesis.paused))speechSynthesis.cancel();$('speak').disabled=false;speechMessage('停止しました。');queuedUtterances=[];currentSpeech=null;$('speak').textContent='▶ 読み上げる'}
@@ -52,7 +81,8 @@ function speak(text,language=state.settings.language||'auto',localOnly=false){
  stop();voices=speechSynthesis.getVoices();const token=generation;
  const chunks=speechChunks(text,language);
  if(!chunks.length){notify('読み上げる言葉を入力してください。');return}
- if(localOnly&&chunks.some(c=>!voices.some(v=>v.localService&&v.lang.toLowerCase().startsWith(c.lang)))){speechMessage('この文章の言語に対応する端末音声が見つかりません。音声設定で別の声を選んでください。');return}
+ const missing=[...new Set(chunks.filter(c=>!voices.some(v=>(!localOnly||v.localService)&&v.lang.toLowerCase().startsWith(c.lang))).map(c=>c.lang==='ja'?'日本語':'英語'))];
+ if(missing.length){speechMessage(missing.join('・')+'の'+(localOnly?'端末音声':'音声')+'が見つかりません。音声設定の一覧を確認してください。');return}
  currentSpeech={text,language};lastAttempt={text,language};
  let recorded=false;const rate=localOnly?1:Math.max(.3,Math.min(3,Number($('rate').value)||1));
  if(speechSynthesis.paused)speechSynthesis.resume();
@@ -72,7 +102,8 @@ function speak(text,language=state.settings.language||'auto',localOnly=false){
  try{for(const u of batch){if(token!==generation)break;speechSynthesis.speak(u)}}catch{stop();notify('音声を再生できませんでした。別の音声を選んでお試しください。')}
 }
 
-$('speechProgress').textContent='再生改善版 6 · 読み込み完了';$('retryLocal').onclick=()=>{const attempt=lastAttempt||{text:$('draft').value,language:state.settings.language||'auto'};speak(attempt.text,attempt.language,true)};
+if($('mixedTest'))$('mixedTest').onclick=()=>speak('希望を言うときは「be able to」と言います。I would like to be able to speak English.','auto');
+$('speechProgress').textContent='読み方改善版 7 · 読み込み完了';$('retryLocal').onclick=()=>{const attempt=lastAttempt||{text:$('draft').value,language:state.settings.language||'auto'};speak(attempt.text,attempt.language,true)};
 $('speak').onclick=()=>speak($('draft').value);$('stop').onclick=stop;$('language').value=state.settings.language||'auto';$('language').onchange=()=>{state.settings.language=$('language').value;persist()};$('draft').onkeydown=e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter')speak($('draft').value)};
 function loadVoices(){voices='speechSynthesis'in window?speechSynthesis.getVoices():[];['ja','en'].forEach(lang=>{const s=$(lang+'Voice');s.replaceChildren();s.append(new Option('自動選択',''));voices.filter(v=>v.lang.toLowerCase().startsWith(lang)).forEach(v=>s.append(new Option(v.name+(v.localService?' · 端末音声':' · 通信を利用する場合あり'),v.voiceURI)));s.value=state.settings[lang]||'';if(s.selectedIndex<0)s.value='';s.onchange=()=>{state.settings[lang]=s.value;persist()}})}
 $('preferLocal').checked=state.settings.preferLocal===true;$('preferLocal').onchange=()=>{state.settings.preferLocal=$('preferLocal').checked;persist()};
