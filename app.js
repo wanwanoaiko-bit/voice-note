@@ -10,12 +10,12 @@ function persist(){state.active=active;try{localStorage.setItem(key,JSON.stringi
 // Apply once on upgrade; subsequent explicit voice/speed changes remain available.
 function useBrowserPlaybackSettings(){
  state.settings.ja='__browser__';state.settings.en='__browser__';state.settings.rate=1;
- state.settings.playbackDefaults9=true;
+ state.settings.playbackDefaults10=true;
  $('rate').value=1;$('rateValue').textContent='1.0×';
  ['ja','en'].forEach(lang=>{const select=$(lang+'Voice');if(select)select.value='__browser__'});
  persist();
 }
-if(!loadError&&!state.settings.playbackDefaults9)useBrowserPlaybackSettings();
+if(!loadError&&!state.settings.playbackDefaults10)useBrowserPlaybackSettings();
 const note=()=>state.notes.find(n=>n.id===active);
 function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
 function btn(text,cls,fn,label){const b=el('button',cls,text);b.type='button';b.onclick=fn;if(label)b.setAttribute('aria-label',label);return b}
@@ -85,23 +85,23 @@ function speechChunks(text,language){
  });
 }
 function stop(){clearTimeout(startWatchdog);clearInterval(waitTicker);generation++;if('speechSynthesis'in window&&(speechSynthesis.speaking||speechSynthesis.pending||speechSynthesis.paused))speechSynthesis.cancel();$('speak').disabled=false;speechMessage('停止しました。');queuedUtterances=[];currentSpeech=null;$('speak').textContent='▶ 読み上げる'}
-function speak(text,language=state.settings.language||'auto',browserStandard=false){
+function speak(text,language=state.settings.language||'auto'){
  text=String(text);
  if(!text.trim()){notify('読み上げる文章を入力してください。');return}
  if(!('speechSynthesis'in window)){notify('このブラウザは音声読み上げに対応していません。別のブラウザで開いてください。');return}
  stop();voices=speechSynthesis.getVoices();const token=generation;
  const chunks=speechChunks(text,language);
  if(!chunks.length){notify('読み上げる言葉を入力してください。');return}
- const missing=[...new Set(chunks.filter(c=>!browserStandard&&state.settings[c.lang]!=='__browser__'&&!(c.lang==='en'&&!state.settings.en)&&!voices.some(v=>v.lang.toLowerCase().startsWith(c.lang))).map(c=>c.lang==='ja'?'日本語':'英語'))];
+ const missing=[...new Set(chunks.filter(c=>state.settings[c.lang]!=='__browser__'&&!(c.lang==='en'&&!state.settings.en)&&!voices.some(v=>v.lang.toLowerCase().startsWith(c.lang))).map(c=>c.lang==='ja'?'日本語':'英語'))];
  if(missing.length){speechMessage(missing.join('・')+'の'+'音声'+'が見つかりません。音声設定の一覧を確認してください。');return}
  currentSpeech={text,language};lastAttempt={text,language};
- let recorded=false;const rate=browserStandard?1:Math.max(.3,Math.min(3,Number($('rate').value)||1));
+ let recorded=false;const rate=Math.max(.3,Math.min(3,Number(state.settings.rate)||1));
  if(speechSynthesis.paused)speechSynthesis.resume();
  $('speak').textContent='音声を準備中…';$('speak').disabled=true;
  queuedUtterances=chunks.map((c,i)=>{
-  const u=new SpeechSynthesisUtterance(c.text),v=browserStandard?undefined:voiceFor(c.lang);
+  const u=new SpeechSynthesisUtterance(c.text),v=voiceFor(c.lang);
   u.lang=v?v.lang:(c.lang==='ja'?'ja-JP':'en-US');if(v)u.voice=v;u.rate=rate;u.pitch=1;u.volume=1;
-  u.onstart=()=>{if(token!==generation)return;clearTimeout(startWatchdog);clearInterval(waitTicker);$('speak').disabled=false;speechMessage('再生中：'+(v?v.name:'ブラウザ標準 '+u.lang)+' / 速度設定 '+rate.toFixed(1));$('speak').textContent='♪ 読み上げ中';if(!recorded){recorded=true;if(browserStandard)useBrowserPlaybackSettings();state.history=[text,...state.history.filter(t=>t!==text)].slice(0,30);persist();renderHistory()}};
+  u.onstart=()=>{if(token!==generation)return;clearTimeout(startWatchdog);clearInterval(waitTicker);$('speak').disabled=false;speechMessage('再生中：'+(v?v.name:'ブラウザ標準 '+u.lang)+' / 速度設定 '+rate.toFixed(1));$('speak').textContent='♪ 読み上げ中';if(!recorded){recorded=true;state.history=[text,...state.history.filter(t=>t!==text)].slice(0,30);persist();renderHistory()}};
   u.onend=()=>{if(token!==generation)return;if(i===chunks.length-1){clearTimeout(startWatchdog);clearInterval(waitTicker);$('speak').disabled=false;speechMessage('読み上げが終了しました。');queuedUtterances=[];currentSpeech=null;$('speak').textContent='▶ 読み上げる'}else{armStartWatchdog(token)}};
   u.onerror=e=>{if(token!==generation)return;stop();speechMessage('音声を開始・継続できませんでした（'+e.error+'）。ブラウザ標準で再試行してください。');if(e.error!=='canceled'&&e.error!=='interrupted')notify('音声を再生できませんでした。音声設定と端末の音量・接続を確認してください。')};
   return u;
@@ -114,7 +114,7 @@ function speak(text,language=state.settings.language||'auto',browserStandard=fal
 }
 
 if($('mixedTest'))$('mixedTest').onclick=()=>speak('希望を言うときは「be able to」と言います。I would like to be able to speak English.','auto');
-$('speechProgress').textContent='通常再生改善版 9 · 読み込み完了';$('retryLocal').onclick=()=>{const attempt=lastAttempt||{text:$('draft').value,language:state.settings.language||'auto'};speak(attempt.text,attempt.language,true)};
+$('speechProgress').textContent='再生方式統一版 10 · 読み込み完了';$('retryLocal').onclick=()=>{const attempt=lastAttempt||{text:$('draft').value,language:state.settings.language||'auto'};useBrowserPlaybackSettings();speak(attempt.text,attempt.language)};
 $('speak').onclick=()=>speak($('draft').value);$('stop').onclick=stop;$('language').value=state.settings.language||'auto';$('language').onchange=()=>{state.settings.language=$('language').value;persist()};$('draft').onkeydown=e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter')speak($('draft').value)};
 function loadVoices(){voices='speechSynthesis'in window?speechSynthesis.getVoices():[];['ja','en'].forEach(lang=>{const s=$(lang+'Voice');s.replaceChildren();s.append(new Option('ブラウザ標準（声を個別指定しない）','__browser__'),new Option('自動選択（アプリが選ぶ）',''));voices.filter(v=>v.lang.toLowerCase().startsWith(lang)).forEach(v=>s.append(new Option(v.name+(v.localService?' · 端末音声':' · 通信を利用する場合あり'),v.voiceURI)));s.value=state.settings[lang]||'';if(s.selectedIndex<0)s.value='';s.onchange=()=>{state.settings[lang]=s.value;persist()}})}
 $('preferLocal').checked=state.settings.preferLocal===true;$('preferLocal').onchange=()=>{state.settings.preferLocal=$('preferLocal').checked;persist()};
