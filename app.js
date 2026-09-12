@@ -17,7 +17,8 @@ $('deleteItem').onclick=()=>{if(!confirm(editing.type==='note'?'このノート�
 $('closeEdit').onclick=()=>$('editDialog').close();$('noteMenu').onclick=()=>openEditor('note');$('allFilter').onclick=()=>{favorites=false;render()};$('favoriteFilter').onclick=()=>{favorites=true;render()};$('draft').oninput=()=>$('charCount').textContent=$('draft').value.length+'文字';$('save').onclick=()=>{const text=$('draft').value.trim();if(!text){notify('保存する文章を入力してください。');return}note().phrases.push({id:uid(),text,favorite:false});favorites=false;if(persist())notify('ノートに保存しました。');render()};
 function segments(text,lang='auto'){if(lang!=='auto')return [{text,lang}];const parts=text.match(/[A-Za-z]+(?:['’.-][A-Za-z]+)*(?:[ ,!?;:\n]+[A-Za-z]+(?:['’.-][A-Za-z]+)*)*|[^A-Za-z]+/g)||[];const result=[];parts.forEach(t=>{let l=/[A-Za-z]/.test(t)?'en':/[ぁ-んァ-ヶ一-龠]/u.test(t)?'ja':result.at(-1)?.lang||(/[ぁ-んァ-ヶ一-龠]/u.test(text)?'ja':'en');if(result.at(-1)?.lang===l)result.at(-1).text+=t;else result.push({text:t,lang:l})});return result}
 // Keep queued utterances alive until playback ends (including on mobile).
-let queuedUtterances=[],currentSpeech=null;
+let queuedUtterances=[],currentSpeech=null,startWatchdog;
+function armStartWatchdog(token){clearTimeout(startWatchdog);startWatchdog=setTimeout(()=>{if(token!==generation)return;stop();clearTimeout(timer);$('status').textContent='音声が8秒以内に開始しませんでした。音声設定で「端末音声」を選び、もう一度読み上げてください。';},8000)}
 function voiceFor(lang){
  const available=voices.filter(v=>v.lang.toLowerCase().startsWith(lang));
  const selected=available.find(v=>v.voiceURI===state.settings[lang]);
@@ -37,7 +38,7 @@ function speechChunks(text,language){
    .map(t=>({text:t,lang:part.lang}));
  });
 }
-function stop(){generation++;if('speechSynthesis'in window)speechSynthesis.cancel();queuedUtterances=[];currentSpeech=null;$('speak').textContent='▶ 読み上げる'}
+function stop(){clearTimeout(startWatchdog);generation++;if('speechSynthesis'in window)speechSynthesis.cancel();queuedUtterances=[];currentSpeech=null;$('speak').textContent='▶ 読み上げる'}
 function speak(text,language=state.settings.language||'auto'){
  text=String(text);
  if(!text.trim()){notify('読み上げる文章を入力してください。');return}
@@ -52,14 +53,15 @@ function speak(text,language=state.settings.language||'auto'){
  queuedUtterances=chunks.map((c,i)=>{
   const u=new SpeechSynthesisUtterance(c.text),v=voiceFor(c.lang);
   u.lang=v?v.lang:(c.lang==='ja'?'ja-JP':'en-US');if(v)u.voice=v;u.rate=rate;u.pitch=1;u.volume=1;
-  u.onstart=()=>{if(token!==generation)return;$('speak').textContent='♪ 読み上げ中';if(!recorded){recorded=true;state.history=[text,...state.history.filter(t=>t!==text)].slice(0,30);persist();renderHistory()}};
-  u.onend=()=>{if(token===generation&&i===chunks.length-1){queuedUtterances=[];currentSpeech=null;$('speak').textContent='▶ 読み上げる'}};
+  u.onstart=()=>{if(token!==generation)return;clearTimeout(startWatchdog);$('speak').textContent='♪ 読み上げ中';if(!recorded){recorded=true;state.history=[text,...state.history.filter(t=>t!==text)].slice(0,30);persist();renderHistory()}};
+  u.onend=()=>{if(token!==generation)return;if(i===chunks.length-1){clearTimeout(startWatchdog);queuedUtterances=[];currentSpeech=null;$('speak').textContent='▶ 読み上げる'}else{armStartWatchdog(token)}};
   u.onerror=e=>{if(token!==generation)return;stop();if(e.error!=='canceled'&&e.error!=='interrupted')notify('音声を再生できませんでした。音声設定と端末の音量・接続を確認してください。')};
   return u;
  });
  // Enqueue all parts now, rather than waiting for an onend callback to submit the next language.
  // This removes the app-side handoff; engine switching latency is still device-dependent.
  const batch=queuedUtterances;
+ armStartWatchdog(token);
  try{for(const u of batch){if(token!==generation)break;speechSynthesis.speak(u)}}catch{stop();notify('音声を再生できませんでした。別の音声を選んでお試しください。')}
 }
 
