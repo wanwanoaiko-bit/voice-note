@@ -17,38 +17,43 @@ $('deleteItem').onclick=()=>{if(!confirm(editing.type==='note'?'このノート�
 $('closeEdit').onclick=()=>$('editDialog').close();$('noteMenu').onclick=()=>openEditor('note');$('allFilter').onclick=()=>{favorites=false;render()};$('favoriteFilter').onclick=()=>{favorites=true;render()};$('draft').oninput=()=>$('charCount').textContent=$('draft').value.length+'文字';$('save').onclick=()=>{const text=$('draft').value.trim();if(!text){notify('保存する文章を入力してください。');return}note().phrases.push({id:uid(),text,favorite:false});favorites=false;if(persist())notify('ノートに保存しました。');render()};
 function segments(text,lang='auto'){if(lang!=='auto')return [{text,lang}];const parts=text.match(/[A-Za-z]+(?:['’.-][A-Za-z]+)*(?:[ ,!?;:\n]+[A-Za-z]+(?:['’.-][A-Za-z]+)*)*|[^A-Za-z]+/g)||[];const result=[];parts.forEach(t=>{let l=/[A-Za-z]/.test(t)?'en':/[ぁ-んァ-ヶ一-龠]/u.test(t)?'ja':result.at(-1)?.lang||(/[ぁ-んァ-ヶ一-龠]/u.test(text)?'ja':'en');if(result.at(-1)?.lang===l)result.at(-1).text+=t;else result.push({text:t,lang:l})});return result}
 // Keep queued utterances alive until playback ends (including on mobile).
-let queuedUtterances=[];
+let queuedUtterances=[],currentSpeech=null;
 function voiceFor(lang){
  const available=voices.filter(v=>v.lang.toLowerCase().startsWith(lang));
  const selected=available.find(v=>v.voiceURI===state.settings[lang]);
  if(selected)return selected;
  const male=v=>/keita|ichiro|takumi|otoya|hattori|naoki|david|mark|daniel|alex|guy|aaron|fred|male\b/i.test(v.name)&&!/female/i.test(v.name);
- const local=state.settings.preferLocal!==false;
- return available.map((v,i)=>({v,i,score:(male(v)?100:0)+(local&&v.localService?30:0)+(v.default?1:0)})).sort((a,b)=>b.score-a.score||a.i-b.i)[0]?.v;
+ const local=state.settings.preferLocal===true;
+ const quality=v=>/natural|neural|premium|enhanced|高品質/i.test(v.name);
+ const qualityFirst=state.settings.qualityFirst!==false;
+ return available.map((v,i)=>({v,i,score:(quality(v)?(qualityFirst?300:50):0)+(male(v)?100:0)+(local&&v.localService?400:0)+(v.lang.toLowerCase()===(lang==='en'?'en-us':'ja-jp')?10:0)+(v.default?1:0)})).sort((a,b)=>b.score-a.score||a.i-b.i)[0]?.v;
 }
 function speechChunks(text,language){
- return segments(text,language).flatMap(part=>{
+ return segments(text.replace(/(?<=[A-Za-z])[～〜]/g,''),language).flatMap(part=>{
   // Quotation marks are visual delimiters: avoid extra pauses around quoted English.
-  const spoken=part.text.replace(/[「」『』“”]/g,'');
-  return (spoken.match(/[^。！？.!?\n]{1,180}[。！？.!?\n]*|[。！？.!?\n]+/gu)||[])
+  const spoken=part.text.replace(/[「」『』“”]/g,'').replace(/(?<=[A-Za-z])[～〜]/g,'');
+  return (spoken.match(/[^。！？\n]+[。！？\n]*|[。！？\n]+/gu)||[])
    .filter(t=>/[\p{L}\p{N}]/u.test(t))
    .map(t=>({text:t,lang:part.lang}));
  });
 }
-function stop(){generation++;if('speechSynthesis'in window)speechSynthesis.cancel();queuedUtterances=[];$('speak').textContent='▶ 読み上げる'}
-function speak(text){
+function stop(){generation++;if('speechSynthesis'in window)speechSynthesis.cancel();queuedUtterances=[];currentSpeech=null;$('speak').textContent='▶ 読み上げる'}
+function speak(text,language=state.settings.language||'auto'){
+ text=String(text);
  if(!text.trim()){notify('読み上げる文章を入力してください。');return}
  if(!('speechSynthesis'in window)){notify('このブラウザは音声読み上げに対応していません。別のブラウザで開いてください。');return}
  stop();voices=speechSynthesis.getVoices();const token=generation;
- const chunks=speechChunks(text,state.settings.language||'auto');
+ const chunks=speechChunks(text,language);
  if(!chunks.length){notify('読み上げる言葉を入力してください。');return}
- let recorded=false;const rate=state.settings.rate;
+ currentSpeech={text,language};
+ let recorded=false;const rate=Math.max(.5,Math.min(1.5,Number($('rate').value)||1));
+ if(speechSynthesis.paused)speechSynthesis.resume();
  $('speak').textContent='音声を準備中…';
  queuedUtterances=chunks.map((c,i)=>{
   const u=new SpeechSynthesisUtterance(c.text),v=voiceFor(c.lang);
-  u.lang=c.lang==='ja'?'ja-JP':'en-US';if(v)u.voice=v;u.rate=rate;
+  u.lang=v?v.lang:(c.lang==='ja'?'ja-JP':'en-US');if(v)u.voice=v;u.rate=rate;u.pitch=1;u.volume=1;
   u.onstart=()=>{if(token!==generation)return;$('speak').textContent='♪ 読み上げ中';if(!recorded){recorded=true;state.history=[text,...state.history.filter(t=>t!==text)].slice(0,30);persist();renderHistory()}};
-  u.onend=()=>{if(token===generation&&i===chunks.length-1){queuedUtterances=[];$('speak').textContent='▶ 読み上げる'}};
+  u.onend=()=>{if(token===generation&&i===chunks.length-1){queuedUtterances=[];currentSpeech=null;$('speak').textContent='▶ 読み上げる'}};
   u.onerror=e=>{if(token!==generation)return;stop();if(e.error!=='canceled'&&e.error!=='interrupted')notify('音声を再生できませんでした。音声設定と端末の音量・接続を確認してください。')};
   return u;
  });
@@ -59,10 +64,11 @@ function speak(text){
 }
 
 $('speak').onclick=()=>speak($('draft').value);$('stop').onclick=stop;$('language').value=state.settings.language||'auto';$('language').onchange=()=>{state.settings.language=$('language').value;persist()};$('draft').onkeydown=e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter')speak($('draft').value)};
-function loadVoices(){voices='speechSynthesis'in window?speechSynthesis.getVoices():[];['ja','en'].forEach(lang=>{const s=$(lang+'Voice');s.replaceChildren();s.append(new Option('自動選択（男性音声を優先）',''));voices.filter(v=>v.lang.toLowerCase().startsWith(lang)).forEach(v=>s.append(new Option(v.name+(v.localService?' · 端末音声':' · 通信を利用する場合あり'),v.voiceURI)));s.value=state.settings[lang]||'';s.onchange=()=>{state.settings[lang]=s.value;persist()}})}
-$('preferLocal').checked=state.settings.preferLocal!==false;$('preferLocal').onchange=()=>{state.settings.preferLocal=$('preferLocal').checked;persist()};
-$('settingsOpen').onclick=()=>{loadVoices();$('settings').showModal()};$('closeSettings').onclick=()=>$('settings').close();$('rate').value=state.settings.rate;$('rateValue').textContent=state.settings.rate.toFixed(1)+'×';$('rate').oninput=()=>{state.settings.rate=Number($('rate').value);$('rateValue').textContent=state.settings.rate.toFixed(1)+'×';persist()};document.querySelectorAll('[data-test]').forEach(b=>b.onclick=()=>{const previous=state.settings.language;state.settings.language=b.dataset.test;speak(b.dataset.test==='ja'?'こんにちは。この声でお話しします。':'Hello. This is my voice.');state.settings.language=previous});$('clearHistory').onclick=()=>{if(state.history.length&&confirm('読み上げ履歴を消去しますか？')){state.history=[];persist();renderHistory()}};
-$('export').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(state,null,2)],{type:'application/json'}));const a=el('a');a.href=url;a.download='voice-note-backup.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};$('import').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>5000000)throw Error();const data=JSON.parse(await file.text());if(!valid(data))throw Error();if(!confirm('現在のノート・履歴・設定をバックアップの内容に置き換えますか？'))return;stop();state=data;$('preferLocal').checked=state.settings.preferLocal!==false;active=state.notes[0].id;favorites=false;persist();render();loadVoices();$('language').value=state.settings.language||'auto';$('rate').value=state.settings.rate;$('rateValue').textContent=state.settings.rate.toFixed(1)+'×';notify('バックアップを復元しました。')}catch{notify('このファイルは復元できません。Voice Noteのバックアップを選んでください。')}finally{e.target.value=''}};
+function loadVoices(){voices='speechSynthesis'in window?speechSynthesis.getVoices():[];['ja','en'].forEach(lang=>{const s=$(lang+'Voice');s.replaceChildren();s.append(new Option('自動選択',''));voices.filter(v=>v.lang.toLowerCase().startsWith(lang)).forEach(v=>s.append(new Option(v.name+(v.localService?' · 端末音声':' · 通信を利用する場合あり'),v.voiceURI)));s.value=state.settings[lang]||'';if(s.selectedIndex<0)s.value='';s.onchange=()=>{state.settings[lang]=s.value;persist()}})}
+$('preferLocal').checked=state.settings.preferLocal===true;$('preferLocal').onchange=()=>{state.settings.preferLocal=$('preferLocal').checked;persist()};
+$('qualityFirst').checked=state.settings.qualityFirst!==false;$('qualityFirst').onchange=()=>{state.settings.qualityFirst=$('qualityFirst').checked;persist()};
+$('settingsOpen').onclick=()=>{loadVoices();$('settings').showModal()};$('closeSettings').onclick=()=>$('settings').close();$('rate').value=state.settings.rate;$('rateValue').textContent=state.settings.rate.toFixed(1)+'×';$('rate').oninput=()=>{state.settings.rate=Number($('rate').value);$('rateValue').textContent=state.settings.rate.toFixed(1)+'×';persist()};$('rate').onchange=()=>{if(currentSpeech){const playback={...currentSpeech};speak(playback.text,playback.language);notify('速度を変更して、文章の先頭から読み上げます。')}};document.querySelectorAll('[data-test]').forEach(b=>b.onclick=()=>speak(b.dataset.test==='ja'?'こんにちは。この声でお話しします。':'I would like to be able to speak naturally.',b.dataset.test));$('clearHistory').onclick=()=>{if(state.history.length&&confirm('読み上げ履歴を消去しますか？')){state.history=[];persist();renderHistory()}};
+$('export').onclick=()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(state,null,2)],{type:'application/json'}));const a=el('a');a.href=url;a.download='voice-note-backup.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};$('import').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>5000000)throw Error();const data=JSON.parse(await file.text());if(!valid(data))throw Error();if(!confirm('現在のノート・履歴・設定をバックアップの内容に置き換えますか？'))return;stop();state=data;$('preferLocal').checked=state.settings.preferLocal===true;$('qualityFirst').checked=state.settings.qualityFirst!==false;active=state.notes[0].id;favorites=false;persist();render();loadVoices();$('language').value=state.settings.language||'auto';$('rate').value=state.settings.rate;$('rateValue').textContent=state.settings.rate.toFixed(1)+'×';notify('バックアップを復元しました。')}catch{notify('このファイルは復元できません。Voice Noteのバックアップを選んでください。')}finally{e.target.value=''}};
 render();loadVoices();if('speechSynthesis'in window)speechSynthesis.addEventListener('voiceschanged',loadVoices);if(loadError)notify('保存データを読み込めませんでした。バックアップがあれば復元してください。');
 
 if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
