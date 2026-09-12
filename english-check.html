@@ -1,0 +1,23 @@
+<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Voice Note 英語音声の確認</title><style>body{font:18px/1.7 system-ui,sans-serif;max-width:650px;margin:auto;padding:24px;color:#193f37;background:#f5f8f7}button,select,textarea{font:inherit;padding:14px;margin:8px 0;width:100%;box-sizing:border-box}button{background:#166655;color:white;border:0;border-radius:10px}button:disabled{opacity:.5}textarea{height:230px;background:white}a{color:#166655}</style><h1>英語音声の確認</h1><p>「Hello. How are you today?」を標準速度で読み上げます。</p><label for="voice">試す音声</label><select id="voice"><option value="">ブラウザ標準（英語を指定）</option></select><button id="play">▶ 短い英語を試す</button><button id="stop">■ 停止</button><p id="status" role="status">準備できました。</p><label for="result">確認結果（この内容をお知らせください）</label><textarea id="result" readonly></textarea><p><a href="./">Voice Noteに戻る</a></p><script>
+'use strict';
+const $=id=>document.getElementById(id),synth=window.speechSynthesis;
+let voices=[],utterance=null,token=0,watchdog;
+function log(t){$('result').value+=t+'\n'}
+function refresh(){const previous=$('voice').value;voices=synth.getVoices().filter(v=>/^en(?:[-_]|$)/i.test(v.lang));$('voice').replaceChildren(new Option('ブラウザ標準（英語を指定）',''));voices.forEach((v,i)=>$('voice').append(new Option(v.name+' · '+v.lang+(v.localService?' · 端末音声':' · 通信音声'),String(i))));$('voice').value=previous;if($('voice').selectedIndex<0)$('voice').value='';if(!utterance)$('status').textContent='英語の候補：'+voices.length+'件（端末音声：'+voices.filter(v=>v.localService).length+'件）';}
+function finish(message,cancel=false){++token;clearTimeout(watchdog);utterance=null;$('play').disabled=false;$('status').textContent=message;log(message);if(cancel)synth.cancel()}
+$('stop').onclick=()=>finish('停止しました。',true);
+$('play').onclick=()=>{
+ if(utterance)return;
+ $('result').value='';const selected=$('voice').value===''?null:voices[Number($('voice').value)];
+ const id=++token;utterance=new SpeechSynthesisUtterance('Hello. How are you today?');utterance.lang=selected?selected.lang:'en-US';if(selected)utterance.voice=selected;utterance.rate=1;utterance.pitch=1;utterance.volume=1;
+ log('確認ページ 1 / 速度 1.0');log('音声：'+(selected?selected.name:'ブラウザ標準'));log('英語候補 '+voices.length+'件 / 端末音声 '+voices.filter(v=>v.localService).length+'件');
+ $('play').disabled=true;$('status').textContent='開始を待っています（最大8秒）。';
+ watchdog=setTimeout(()=>{if(id===token)finish('結果：8秒以内に音声が開始しませんでした。',true)},8000);
+ utterance.onstart=()=>{if(id!==token)return;clearTimeout(watchdog);log('開始イベント：あり');$('status').textContent='再生中です。';watchdog=setTimeout(()=>{if(id===token)finish('結果：開始しましたが、終了を確認できませんでした。',true)},20000)};
+ utterance.onend=()=>{if(id===token)finish('結果：再生終了。実際に声が聞こえたかもお知らせください。')};
+ utterance.onerror=e=>{if(id===token)finish('結果：音声エラー '+e.error)};
+ try{if(synth.paused)synth.resume();synth.speak(utterance)}catch(e){finish('結果：再生処理のエラー '+e.name)}
+};
+if(synth){refresh();synth.addEventListener('voiceschanged',refresh)}else{$('play').disabled=true;$('stop').disabled=true;$('status').textContent='この環境は音声読み上げに対応していません。'}
+window.addEventListener('pagehide',()=>{if(synth)finish('ページを閉じました。',true)});
+</script></html>
